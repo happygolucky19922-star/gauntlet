@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-import subprocess
 from urllib.parse import urlparse
+
+import httpx
 
 from ..config import AppConfig
 
@@ -31,9 +32,13 @@ class ModelDownloader:
         parsed = urlparse(url)
         if parsed.scheme != "https" or parsed.netloc != "github.com":
             raise RuntimeError("Only https://github.com release URLs are allowed")
-        if not output_name.strip():
-            raise RuntimeError("output_name is required")
+        if not output_name.strip() or Path(output_name).name != output_name:
+            raise RuntimeError("output_name must be a simple file name")
 
         destination = self.download_root / output_name
-        subprocess.run(["curl", "-L", "--fail", "-o", str(destination), url], check=True)
+        with httpx.stream("GET", url, follow_redirects=True, timeout=60.0) as response:
+            response.raise_for_status()
+            with destination.open("wb") as handle:
+                for chunk in response.iter_bytes():
+                    handle.write(chunk)
         return destination

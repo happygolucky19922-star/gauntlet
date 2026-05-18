@@ -9,10 +9,17 @@ ARCHIVE="${DIST_DIR}/lucy-build-${STAMP}.tar.gz"
 mkdir -p "${DIST_DIR}"
 
 tar -czf "${ARCHIVE}" \
+  --exclude='backend/.venv' \
+  --exclude='backend/.pytest_cache' \
+  --exclude='.pytest_cache' \
+  --exclude='**/__pycache__' \
+  --exclude='data' \
+  --exclude='dist' \
   -C "${ROOT_DIR}" \
   README.md \
   backend \
   scripts \
-  tauri
+  tauri \
+  .github
 
 echo "${ARCHIVE}"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 
@@ -15,10 +16,14 @@ from .schemas import (
     FileAnalyzeResponse,
     LoadModelRequest,
     ModelInfo,
+    OpenSearchResponse,
     RuntimeProfile,
     RuntimeSettings,
+    WeatherResponse,
 )
 from .services.downloader import ModelDownloader
+from .services.file_analyzer import analyze_upload
+from .services.open_apis import OpenAPIClient
 from .system2.executive import System2Executive
 from .test_arena import TestArena
 
@@ -29,6 +34,7 @@ model_manager = ModelManager(config)
 engine = VLLMEngine()
 executive = System2Executive(engine=engine, config=config)
 downloader = ModelDownloader(config=config)
+open_api_client = OpenAPIClient()
 arena = TestArena()
 connectors = ConnectorState(**DEFAULT_CONNECTORS)
 
@@ -85,30 +91,46 @@ def list_models() -> list[ModelInfo]:
 
 @app.post("/models/load")
 def load_model(req: LoadModelRequest) -> dict[str, str]:
-    engine.load(req.model_path, quantization=req.quantization)
-    return {"loaded": req.model_path, "quantization": req.quantization}
+    try:
+        engine.load(
+            req.model_path,
+            quantization=req.quantization,
+            n_ctx=req.n_ctx,
+            n_threads=req.n_threads,
+            n_gpu_layers=req.n_gpu_layers,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"loaded": req.model_path, "quantization": req.quantization, "backend": engine.backend or "unknown"}
 
 
 @app.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest) -> ChatResponse:
     if req.model_path and req.model_path != engine.loaded_model_path:
-        engine.load(req.model_path)
+        try:
+            engine.load(req.model_path)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if not engine.is_loaded():
         raise HTTPException(status_code=400, detail="No model loaded. Call /models/load first.")
 
+    generation = GenerationConfig(
+        temperature=req.temperature,
+        top_p=req.top_p,
+        max_tokens=req.max_tokens,
+    )
+
     try:
-        reply, trace_id = executive.run(
-            req.message,
-            generation=GenerationConfig(
-                temperature=req.temperature,
-                top_p=req.top_p,
-                max_tokens=req.max_tokens,
-            ),
-        )
+        if req.tools_enabled:
+            reply, trace_id = executive.run(req.message, generation=generation)
+        else:
+            model_out = engine.generate(req.message, config=generation)
+            reply = model_out.split("FINAL:", 1)[1].strip() if "FINAL:" in model_out else model_out.strip()
+            trace_id = executive.record_direct_response(req.message, model_out)
     except RuntimeError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return ChatResponse(reply=reply, trace_id=trace_id)
+    return ChatResponse(reply=reply or "No response produced.", trace_id=trace_id)
 
 
 @app.get("/traces/{trace_id}")
@@ -125,7 +147,7 @@ def get_arena_level(level: int) -> dict:
     if level < 1 or level > 100:
         raise HTTPException(status_code=404, detail="Level out of range")
     arena_level = arena.get_level(level)
-    return arena_level.__dict__
+    return asdict(arena_level)
 
 
 @app.get("/connectors", response_model=ConnectorState)
@@ -145,8 +167,35 @@ def set_connectors(new_state: ConnectorState) -> ConnectorState:
 @app.post("/files/analyze", response_model=FileAnalyzeResponse)
 async def analyze_file(file: UploadFile = File(...)) -> FileAnalyzeResponse:
     payload = await file.read()
-    summary = f"Received {file.filename} ({len(payload)} bytes). Deep parsing pipeline can be plugged in here."
-    return FileAnalyzeResponse(filename=file.filename or "unknown", size=len(payload), summary=summary)
+    analysis = analyze_upload(file.filename, payload, file.content_type)
+    return FileAnalyzeResponse(**asdict(analysis))
+
+
+@app.get("/open/search", response_model=OpenSearchResponse)
+def open_search(query: str, limit: int = 5) -> OpenSearchResponse:
+    try:
+        results = open_api_client.wikipedia_search(query=query, limit=max(1, min(limit, 10)))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return OpenSearchResponse(results=results)
+
+
+@app.get("/open/weather", response_model=WeatherResponse)
+def open_weather(location: str) -> WeatherResponse:
+    try:
+        forecast = open_api_client.open_meteo_forecast(location=location)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return WeatherResponse(**forecast)
+
+
+@app.get("/open/arxiv", response_model=OpenSearchResponse)
+def open_arxiv(query: str, limit: int = 5) -> OpenSearchResponse:
+    try:
+        results = open_api_client.arxiv_search(query=query, limit=max(1, min(limit, 10)))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return OpenSearchResponse(results=results)
 
 
 @app.post("/models/download/hf")

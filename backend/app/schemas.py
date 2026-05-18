@@ -14,6 +14,9 @@ class ModelInfo(BaseModel):
 class LoadModelRequest(BaseModel):
     model_path: str
     quantization: str = "awq"
+    n_ctx: int = Field(default=4096, ge=512, le=131072)
+    n_threads: int = Field(default=8, ge=1, le=256)
+    n_gpu_layers: int = Field(default=0, ge=0, le=999)
 
 
 class ChatRequest(BaseModel):
@@ -50,7 +53,20 @@ class ConnectorState(BaseModel):
 class FileAnalyzeResponse(BaseModel):
     filename: str
     size: int
+    sha256: str
+    media_type: str
+    line_count: int | None = None
     summary: str
+
+
+class OpenSearchResponse(BaseModel):
+    results: list[dict[str, str]]
+
+
+class WeatherResponse(BaseModel):
+    location: dict[str, object]
+    current: dict[str, object]
+    daily: dict[str, object]
 
 
 class RuntimeSettings(BaseModel):
