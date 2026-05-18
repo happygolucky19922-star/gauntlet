@@ -17,7 +17,7 @@ class ToolResult:
 class SandboxedToolExecutor:
     """Allowlisted local executor for analysis tasks."""
 
-    ALLOWED_TOOLS = {"bash", "gdb", "tcpdump", "xxd", "hexdump"}
+    ALLOWED_TOOLS = {"gdb", "tcpdump", "xxd", "hexdump"}
     BLOCKED_PATTERNS = ("curl ", "wget ", "nc ", "ncat ", "ssh ", "scp ")
 
     def __init__(self, timeout_sec: int = 30, cwd: Path | None = None) -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 
@@ -97,18 +98,22 @@ def chat(req: ChatRequest) -> ChatResponse:
     if not engine.is_loaded():
         raise HTTPException(status_code=400, detail="No model loaded. Call /models/load first.")
 
+    generation = GenerationConfig(
+        temperature=req.temperature,
+        top_p=req.top_p,
+        max_tokens=req.max_tokens,
+    )
+
     try:
-        reply, trace_id = executive.run(
-            req.message,
-            generation=GenerationConfig(
-                temperature=req.temperature,
-                top_p=req.top_p,
-                max_tokens=req.max_tokens,
-            ),
-        )
+        if req.tools_enabled:
+            reply, trace_id = executive.run(req.message, generation=generation)
+        else:
+            model_out = engine.generate(req.message, config=generation)
+            reply = model_out.split("FINAL:", 1)[1].strip() if "FINAL:" in model_out else model_out.strip()
+            trace_id = executive.record_direct_response(req.message, model_out)
     except RuntimeError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return ChatResponse(reply=reply, trace_id=trace_id)
+    return ChatResponse(reply=reply or "No response produced.", trace_id=trace_id)
 
 
 @app.get("/traces/{trace_id}")
@@ -125,7 +130,7 @@ def get_arena_level(level: int) -> dict:
     if level < 1 or level > 100:
         raise HTTPException(status_code=404, detail="Level out of range")
     arena_level = arena.get_level(level)
-    return arena_level.__dict__
+    return asdict(arena_level)
 
 
 @app.get("/connectors", response_model=ConnectorState)

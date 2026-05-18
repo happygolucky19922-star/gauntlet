@@ -1,6 +1,7 @@
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.system2.tools import SandboxedToolExecutor
 
 
 client = TestClient(app)
@@ -71,3 +72,40 @@ def test_arena_bounds() -> None:
 def test_trace_not_found() -> None:
     missing = client.get("/traces/not-a-real-id")
     assert missing.status_code == 404
+
+
+def test_sandbox_rejects_bash() -> None:
+    executor = SandboxedToolExecutor()
+
+    try:
+        executor.run("bash", ["-lc", "echo unsafe"])
+    except ValueError as exc:
+        assert "not allowed" in str(exc)
+    else:  # pragma: no cover - defensive assertion
+        raise AssertionError("bash should not be allowed by the sandbox executor")
+
+
+def test_chat_respects_tools_disabled(monkeypatch) -> None:
+    import app.main as main_app
+
+    load = client.post("/models/load", json={"model_path": "mock://echo", "quantization": "awq"})
+    assert load.status_code == 200
+
+    def fail_if_system2_runs(*args, **kwargs):
+        raise AssertionError("System-2 tools should not run when tools_enabled is false")
+
+    def direct_generate(prompt, config=None):
+        return f"FINAL: direct reply for {prompt}"
+
+    monkeypatch.setattr(main_app.executive, "run", fail_if_system2_runs)
+    monkeypatch.setattr(main_app.engine, "generate", direct_generate)
+
+    chat = client.post("/chat", json={"message": "no tools", "tools_enabled": False})
+
+    assert chat.status_code == 200
+    payload = chat.json()
+    assert payload["reply"] == "direct reply for no tools"
+
+    trace = client.get(f"/traces/{payload['trace_id']}")
+    assert trace.status_code == 200
+    assert "USER: no tools" in trace.json()["trace"]

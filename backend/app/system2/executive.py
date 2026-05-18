@@ -16,10 +16,10 @@ from .tools import SandboxedToolExecutor
 SYSTEM_PROMPT = """You are Lucy System-2 Executive.
 Use ReAct format:
 THOUGHT: concise reasoning
-ACTION: {"tool":"bash","args":["-lc","echo hello"]}
+ACTION: {"tool":"xxd","args":["-l","64","./sample.bin"]}
 OBSERVATION: command output summary
 FINAL: final user response
-Only use local tools; avoid network actions.
+Only use the allowlisted local tools; avoid network actions and shell interpreters.
 """
 
 
@@ -48,6 +48,23 @@ class System2Executive:
                 return None
             return action
         return None
+
+    def _persist_trace(self, trace_id: str, trace_text: str, source: str) -> None:
+        trace_path = self.config.traces_dir / f"{trace_id}.log"
+        trace_path.write_text(trace_text)
+        self._in_memory_traces[trace_id] = trace_text
+
+        if self.collection is not None:
+            try:
+                self.collection.add(
+                    ids=[trace_id],
+                    documents=[trace_text],
+                    embeddings=[[0.0]],
+                    metadatas=[{"source": source, "trace_path": str(trace_path)}],
+                )
+            except Exception:
+                # Chroma persistence is best-effort; local trace files remain authoritative.
+                pass
 
     def run(self, user_input: str, generation: GenerationConfig | None = None, max_steps: int = 5) -> tuple[str, str]:
         trace_id = str(uuid.uuid4())
@@ -81,19 +98,17 @@ class System2Executive:
             context += f"\n{model_out}\n{observation}\n"
 
         trace_text = "\n".join(trace_lines)
-        trace_path = self.config.traces_dir / f"{trace_id}.log"
-        trace_path.write_text(trace_text)
-
-        if self.collection is not None:
-            self.collection.add(
-                ids=[trace_id],
-                documents=[trace_text],
-                metadatas=[{"source": "system2", "trace_path": str(trace_path)}],
-            )
-        else:
-            self._in_memory_traces[trace_id] = trace_text
+        self._persist_trace(trace_id, trace_text, source="system2")
 
         return final or "No final answer produced.", trace_id
+
+
+    def record_direct_response(self, user_input: str, model_out: str) -> str:
+        trace_id = str(uuid.uuid4())
+        trace_text = f"USER: {user_input}\n{model_out}"
+        self._persist_trace(trace_id, trace_text, source="direct_chat")
+
+        return trace_id
 
     def get_trace(self, trace_id: str) -> str:
         trace_path = self.config.traces_dir / f"{trace_id}.log"
